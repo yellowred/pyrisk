@@ -2,6 +2,28 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::parser::{FileSymbols, Symbol};
 
+/// Check if a qualifier (e.g., "my_task" from "my_task.delay()") is itself
+/// a known top-level function. Returns matching targets or empty vec.
+fn resolve_qualifier_as_function(
+    qual: &str,
+    short_name_index: &HashMap<String, Vec<String>>,
+    graph: &CallGraph,
+) -> Vec<String> {
+    if let Some(qual_targets) = short_name_index.get(qual) {
+        qual_targets
+            .iter()
+            .filter(|t| {
+                graph.symbols.get(*t)
+                    .map(|s| !s.qualname.contains('.'))
+                    .unwrap_or(false)
+            })
+            .cloned()
+            .collect()
+    } else {
+        vec![]
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct CallGraph {
     /// symbol full_name -> set of symbols that call it (their full_names)
@@ -57,10 +79,10 @@ impl CallGraph {
                 };
 
                 // Try to resolve callee by short name
-                if let Some(targets) = short_name_index.get(method) {
+                let resolved: Vec<String> = if let Some(targets) = short_name_index.get(method) {
                     let is_self_or_cls = qualifier == Some("self") || qualifier == Some("cls");
 
-                    let resolved: Vec<&String> = if let Some(qual) = qualifier {
+                    if let Some(qual) = qualifier {
                         // Resolve self/cls to the caller's class name
                         let class_name = if is_self_or_cls {
                             // "ClassName.method_name" -> "ClassName"
@@ -84,22 +106,24 @@ impl CallGraph {
 
                             if filtered.is_empty() && is_self_or_cls {
                                 // Fallback only for self/cls (handles inheritance)
-                                targets.iter().collect()
+                                targets.clone()
+                            } else if filtered.is_empty() && !is_self_or_cls {
+                                // For non-self qualifiers that don't match a Class.method pattern,
+                                // check if the qualifier itself is a known top-level function
+                                // (e.g., Celery task: my_task.delay() → resolve to my_task)
+                                resolve_qualifier_as_function(qual, &short_name_index, &graph)
                             } else {
-                                // For non-self qualifiers that don't match, skip —
-                                // the caller is invoking a method on an unknown type,
-                                // not an unrelated bare function with the same name
-                                filtered
+                                filtered.into_iter().cloned().collect()
                             }
                         } else {
                             // self/cls used in top-level function — treat as unqualified
-                            targets.iter().collect()
+                            targets.clone()
                         }
                     } else {
                         // Unqualified call: prefer same-module targets
                         if targets.len() > 1 {
                             if let Some(m) = module {
-                                let same_module: Vec<&String> = targets
+                                let same_module: Vec<String> = targets
                                     .iter()
                                     .filter(|t| {
                                         graph
@@ -108,32 +132,45 @@ impl CallGraph {
                                             .map(|s| s.module == **m)
                                             .unwrap_or(false)
                                     })
+                                    .cloned()
                                     .collect();
                                 if !same_module.is_empty() {
                                     same_module
                                 } else {
-                                    targets.iter().collect()
+                                    targets.clone()
                                 }
                             } else {
-                                targets.iter().collect()
+                                targets.clone()
                             }
                         } else {
-                            targets.iter().collect()
+                            targets.clone()
                         }
-                    };
-
-                    for target in resolved {
-                        graph
-                            .callers
-                            .entry(target.clone())
-                            .or_default()
-                            .insert(caller_full.clone());
-                        graph
-                            .callees
-                            .entry(caller_full.clone())
-                            .or_default()
-                            .insert(target.clone());
                     }
+                } else if let Some(qual) = qualifier {
+                    // Method name not found in index at all.
+                    // Check if qualifier is a known top-level function
+                    // (e.g., my_task.delay() where "delay" isn't defined anywhere)
+                    let is_self_or_cls = qualifier == Some("self") || qualifier == Some("cls");
+                    if !is_self_or_cls {
+                        resolve_qualifier_as_function(qual, &short_name_index, &graph)
+                    } else {
+                        vec![]
+                    }
+                } else {
+                    vec![]
+                };
+
+                for target in &resolved {
+                    graph
+                        .callers
+                        .entry(target.clone())
+                        .or_default()
+                        .insert(caller_full.clone());
+                    graph
+                        .callees
+                        .entry(caller_full.clone())
+                        .or_default()
+                        .insert(target.clone());
                 }
             }
         }
@@ -207,6 +244,27 @@ impl CallGraph {
     /// Direct callers count
     pub fn direct_callers(&self, sym: &str) -> usize {
         self.callers.get(sym).map(|s| s.len()).unwrap_or(0)
+    }
+
+    /// Direct callers count, excluding callers whose file path matches any exclude pattern
+    pub fn direct_callers_filtered(&self, sym: &str, exclude: &[String]) -> usize {
+        if exclude.is_empty() {
+            return self.direct_callers(sym);
+        }
+        self.callers
+            .get(sym)
+            .map(|callers| {
+                callers
+                    .iter()
+                    .filter(|c| {
+                        self.symbols
+                            .get(*c)
+                            .map(|s| !exclude.iter().any(|ex| s.file.contains(ex.as_str())))
+                            .unwrap_or(true)
+                    })
+                    .count()
+            })
+            .unwrap_or(0)
     }
 }
 
@@ -340,6 +398,41 @@ mod tests {
 
         let graph = CallGraph::build(&[fs]);
         assert_eq!(graph.direct_callers("mod.Parent.save"), 1);
+    }
+
+    #[test]
+    fn test_method_call_on_known_function_resolves_to_function() {
+        // Simulates: my_task.delay() where my_task is a top-level function (Celery task)
+        let fs = FileSymbols {
+            defined: vec![
+                make_sym("mod", "my_task"),
+                make_sym("mod", "caller"),
+            ],
+            calls: vec![
+                ("caller".to_string(), "my_task.delay".to_string()),
+                ("caller".to_string(), "my_task.gen_delay".to_string()),
+                ("caller".to_string(), "my_task.run".to_string()),
+            ],
+        };
+
+        let graph = CallGraph::build(&[fs]);
+        assert_eq!(graph.direct_callers("mod.my_task"), 1); // caller (deduplicated)
+    }
+
+    #[test]
+    fn test_method_call_on_class_method_no_false_positive() {
+        // obj.save() should NOT match a top-level function "obj" if "obj" isn't defined
+        // but SHOULD NOT match MyClass.save either (qualifier "obj" != "MyClass")
+        let fs = FileSymbols {
+            defined: vec![
+                make_sym("mod", "MyClass.save"),
+                make_sym("mod", "do_stuff"),
+            ],
+            calls: vec![("do_stuff".to_string(), "obj.save".to_string())],
+        };
+
+        let graph = CallGraph::build(&[fs]);
+        assert_eq!(graph.direct_callers("mod.MyClass.save"), 0);
     }
 
     #[test]

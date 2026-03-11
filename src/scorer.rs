@@ -40,14 +40,21 @@ pub fn score_all(
     changed: &[Symbol],
     graph: &CallGraph,
     test_modules: &HashSet<String>,
+    exclude: &[String],
 ) -> Vec<RiskScore> {
     let mut scores: Vec<RiskScore> = changed
         .iter()
         .map(|sym| {
             let full = sym.full_name();
-            let direct = graph.direct_callers(&full);
+            let direct = graph.direct_callers_filtered(&full, exclude);
             let radius = graph.blast_radius(&full);
-            let transitive = radius.len();
+            let transitive = radius.iter()
+                .filter(|(caller_name, _)| {
+                    graph.symbols.get(caller_name)
+                        .map(|s| !exclude.iter().any(|ex| s.file.contains(ex.as_str())))
+                        .unwrap_or(true)
+                })
+                .count();
 
             // Collect unique modules affected
             let mut modules: HashSet<String> = HashSet::new();

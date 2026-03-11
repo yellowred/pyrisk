@@ -172,7 +172,7 @@ fn main() -> Result<()> {
 
     // Step 5: Score
     let test_modules = scorer::find_test_modules(&repo_root);
-    let scores = scorer::score_all(&changed, &graph, &test_modules);
+    let scores = scorer::score_all(&changed, &graph, &test_modules, &cli.exclude);
 
     // Step 6: Output
     if let Some(ref pattern) = cli.uncovered {

@@ -164,15 +164,15 @@ fn extract_callee_name(node: tree_sitter::Node, source: &str) -> Option<String> 
         "identifier" => Some(source[node.byte_range()].to_string()),
         "attribute" => {
             let attr_node = node.child_by_field_name("attribute")?;
-            let attr_name = source[attr_node.byte_range()].to_string();
-            // If the object is a simple identifier, include it as a qualifier
+            let attr_name = &source[attr_node.byte_range()];
+
             if let Some(obj_node) = node.child_by_field_name("object") {
                 if obj_node.kind() == "identifier" {
                     let obj_name = &source[obj_node.byte_range()];
                     return Some(format!("{}.{}", obj_name, attr_name));
                 }
             }
-            Some(attr_name)
+            Some(attr_name.to_string())
         }
         _ => None,
     }
@@ -274,5 +274,25 @@ def outer():
         assert_eq!(fs.defined.len(), 2);
         assert_eq!(fs.defined[0].qualname, "outer");
         assert_eq!(fs.defined[1].qualname, "outer.inner");
+    }
+
+    #[test]
+    fn test_attribute_calls_preserve_qualifier() {
+        let fs = parse_snippet(
+            r#"
+def my_task():
+    pass
+
+def caller():
+    my_task.delay(1, 2)
+    my_task.apply_async(args=[1])
+    my_task.s(1)
+"#,
+        );
+        // Parser preserves the full qualified name; resolution happens in callgraph
+        assert_eq!(fs.calls.len(), 3);
+        assert_eq!(fs.calls[0], ("caller".to_string(), "my_task.delay".to_string()));
+        assert_eq!(fs.calls[1], ("caller".to_string(), "my_task.apply_async".to_string()));
+        assert_eq!(fs.calls[2], ("caller".to_string(), "my_task.s".to_string()));
     }
 }
