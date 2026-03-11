@@ -168,11 +168,29 @@ fn main() -> Result<()> {
     );
 
     // Step 4: Build call graph
+    let pb2 = if cli.verbose {
+        let pb = ProgressBar::new_spinner();
+        pb.set_style(
+            ProgressStyle::with_template("{spinner:.cyan} Building call graph…")
+                .unwrap()
+                .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
+        );
+        pb.enable_steady_tick(std::time::Duration::from_millis(80));
+        Some(pb)
+    } else {
+        None
+    };
     let graph = callgraph::CallGraph::build(&all_syms);
 
     // Step 5: Score
+    if let Some(ref pb) = pb2 {
+        pb.set_message("Scoring risk…");
+    }
     let test_modules = scorer::find_test_modules(&repo_root);
     let scores = scorer::score_all(&changed, &graph, &test_modules, &cli.exclude);
+    if let Some(pb) = pb2 {
+        pb.finish_and_clear();
+    }
 
     // Step 6: Output
     if let Some(ref pattern) = cli.uncovered {
