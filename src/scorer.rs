@@ -48,18 +48,21 @@ pub fn score_all(
             let full = sym.full_name();
             let direct = graph.direct_callers_filtered(&full, exclude);
             let radius = graph.blast_radius(&full);
-            let transitive = radius.iter()
+
+            // Filter radius by exclude patterns once, use for all calculations
+            let filtered_radius: Vec<&(String, usize)> = radius.iter()
                 .filter(|(caller_name, _)| {
                     graph.symbols.get(caller_name)
                         .map(|s| !exclude.iter().any(|ex| s.file.contains(ex.as_str())))
                         .unwrap_or(true)
                 })
-                .count();
+                .collect();
+            let transitive = filtered_radius.len();
 
             // Collect unique modules affected
             let mut modules: HashSet<String> = HashSet::new();
             modules.insert(sym.module.clone());
-            for (caller_name, _depth) in &radius {
+            for (caller_name, _depth) in &filtered_radius {
                 if let Some(caller_sym) = graph.symbols.get(caller_name) {
                     modules.insert(caller_sym.module.clone());
                 }
@@ -68,7 +71,7 @@ pub fn score_all(
 
             // Count uncovered callers (callers whose module has no test file)
             let mut uncovered = 0;
-            for (caller_name, _depth) in &radius {
+            for (caller_name, _depth) in &filtered_radius {
                 if let Some(caller_sym) = graph.symbols.get(caller_name) {
                     if !test_modules.contains(&caller_sym.module) {
                         uncovered += 1;
@@ -123,4 +126,86 @@ pub fn find_test_modules(repo_root: &Path) -> HashSet<String> {
     }
 
     test_modules
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::callgraph::CallGraph;
+    use crate::parser::{FileSymbols, Symbol};
+
+    fn make_sym(module: &str, qualname: &str, file: &str) -> Symbol {
+        Symbol {
+            module: module.to_string(),
+            qualname: qualname.to_string(),
+            file: file.to_string(),
+            line: 1,
+            end_line: 5,
+        }
+    }
+
+    #[test]
+    fn test_exclude_filters_modules_and_uncovered() {
+        // target is called by a caller in __tests__ dir and a caller in src dir
+        let fs1 = FileSymbols {
+            defined: vec![make_sym("mod_a", "target", "src/mod_a.py")],
+            calls: vec![],
+        };
+        let fs2 = FileSymbols {
+            defined: vec![make_sym("mod_b", "prod_caller", "src/mod_b.py")],
+            calls: vec![("prod_caller".to_string(), "target".to_string())],
+        };
+        let fs3 = FileSymbols {
+            defined: vec![make_sym("mod_c", "test_caller", "__tests__/mod_c.py")],
+            calls: vec![("test_caller".to_string(), "target".to_string())],
+        };
+
+        let graph = CallGraph::build(&[fs1, fs2, fs3]);
+        let changed = vec![make_sym("mod_a", "target", "src/mod_a.py")];
+        let test_modules: HashSet<String> = HashSet::new();
+        let exclude = vec!["__tests__".to_string()];
+
+        let scores = score_all(&changed, &graph, &test_modules, &exclude);
+        assert_eq!(scores.len(), 1);
+        let s = &scores[0];
+
+        // Only prod_caller should be counted (test_caller is excluded)
+        assert_eq!(s.direct_callers, 1);
+        assert_eq!(s.transitive_callers, 1);
+        // modules: mod_a (self) + mod_b (prod_caller) = 2, NOT 3
+        assert_eq!(s.modules_affected, 2);
+        // uncovered: only prod_caller (1), NOT test_caller
+        assert_eq!(s.uncovered_callers, 1);
+    }
+
+    #[test]
+    fn test_exclude_all_callers_zeros_modules_and_uncovered() {
+        // All callers are in excluded dirs — modules and uncovered should be minimal
+        let fs1 = FileSymbols {
+            defined: vec![make_sym("mod_a", "target", "src/mod_a.py")],
+            calls: vec![],
+        };
+        let fs2 = FileSymbols {
+            defined: vec![make_sym("mod_t1", "caller1", "__tests__/mod_t1.py")],
+            calls: vec![("caller1".to_string(), "target".to_string())],
+        };
+        let fs3 = FileSymbols {
+            defined: vec![make_sym("mod_t2", "caller2", "__tests__/mod_t2.py")],
+            calls: vec![("caller2".to_string(), "target".to_string())],
+        };
+
+        let graph = CallGraph::build(&[fs1, fs2, fs3]);
+        let changed = vec![make_sym("mod_a", "target", "src/mod_a.py")];
+        let test_modules: HashSet<String> = HashSet::new();
+        let exclude = vec!["__tests__".to_string()];
+
+        let scores = score_all(&changed, &graph, &test_modules, &exclude);
+        let s = &scores[0];
+
+        assert_eq!(s.direct_callers, 0);
+        assert_eq!(s.transitive_callers, 0);
+        // Only the symbol's own module
+        assert_eq!(s.modules_affected, 1);
+        assert_eq!(s.uncovered_callers, 0);
+    }
 }
