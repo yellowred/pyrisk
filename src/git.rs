@@ -32,8 +32,22 @@ pub fn changed_symbols(repo_root: &Path, branch: &str) -> Result<Vec<Symbol>> {
     // Collect changed line ranges per .py file
     let mut changed_files: HashMap<PathBuf, Vec<(usize, usize)>> = HashMap::new();
 
+    use git2::Delta;
+
+    let mut added_files: Vec<PathBuf> = Vec::new();
+
     diff.foreach(
-        &mut |_delta, _progress| true,
+        &mut |delta, _progress| {
+            // Track newly added .py files
+            if delta.status() == Delta::Added {
+                if let Some(new_file) = delta.new_file().path() {
+                    if new_file.to_string_lossy().ends_with(".py") {
+                        added_files.push(repo_root.join(new_file));
+                    }
+                }
+            }
+            true
+        },
         None,
         Some(&mut |delta, hunk| {
             if let Some(new_file) = delta.new_file().path() {
@@ -55,30 +69,10 @@ pub fn changed_symbols(repo_root: &Path, branch: &str) -> Result<Vec<Symbol>> {
     )
     .context("iterating diff")?;
 
-    // For new files (no changed_lines tracked means entire file is new),
-    // handle files that exist in head but not in branch
-    diff.foreach(
-        &mut |delta, _progress| {
-            use git2::Delta;
-            if delta.status() == Delta::Added {
-                if let Some(new_file) = delta.new_file().path() {
-                    let path_str = new_file.to_string_lossy();
-                    if path_str.ends_with(".py") {
-                        let full_path = repo_root.join(new_file);
-                        // Mark entire file as changed with a very large range
-                        changed_files
-                            .entry(full_path)
-                            .or_insert_with(|| vec![(1, 999999)]);
-                    }
-                }
-            }
-            true
-        },
-        None,
-        None,
-        None,
-    )
-    .context("iterating diff for new files")?;
+    // Mark entirely new files with a full-file range
+    for path in added_files {
+        changed_files.entry(path).or_insert_with(|| vec![(1, 999999)]);
+    }
 
     // Parse each changed file and find symbols whose line ranges overlap changed hunks
     let mut symbols = Vec::new();

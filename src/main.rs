@@ -83,11 +83,20 @@ fn main() -> Result<()> {
     }
 
     // Step 1: Get changed symbols (filtered by --exclude)
+    let diff_start = Instant::now();
     let changed: Vec<_> = git::changed_symbols(&repo_root, &branch)
         .with_context(|| format!("analyzing changes against '{}'", branch))?
         .into_iter()
         .filter(|s| !cli.exclude.iter().any(|ex| s.file.contains(ex.as_str())))
         .collect();
+    if cli.verbose {
+        eprintln!(
+            "diff:   found {} changed symbols in {:.1}ms",
+            changed.len(),
+            diff_start.elapsed().as_secs_f64() * 1000.0
+        );
+        eprintln!();
+    }
 
     if changed.is_empty() {
         println!("No changed Python symbols found relative to '{}'.", branch);
