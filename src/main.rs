@@ -12,7 +12,7 @@ use rayon::prelude::*;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Instant;
-use walkdir::WalkDir;
+use ignore::WalkBuilder;
 
 #[derive(Parser)]
 #[command(
@@ -103,18 +103,11 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Step 2: Walk all .py files
-    let py_files: Vec<PathBuf> = WalkDir::new(&repo_root)
-        .into_iter()
+    // Step 2: Walk all .py files (respects .gitignore)
+    let py_files: Vec<PathBuf> = WalkBuilder::new(&repo_root)
+        .build()
         .filter_map(|e| e.ok())
-        .filter(|e| {
-            let p = e.path();
-            p.extension().is_some_and(|ext| ext == "py")
-                && !p.components().any(|c| {
-                    let s = c.as_os_str().to_string_lossy();
-                    s.starts_with('.') || s == "node_modules" || s == "__pycache__" || s == ".git"
-                })
-        })
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "py"))
         .map(|e| e.into_path())
         .collect();
 
