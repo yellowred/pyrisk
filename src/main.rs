@@ -7,12 +7,12 @@ mod scorer;
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use ignore::WalkBuilder;
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Instant;
-use ignore::WalkBuilder;
 
 #[derive(Parser)]
 #[command(
