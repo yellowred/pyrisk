@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use crate::callgraph::CallGraph;
+use crate::callgraph::{CallGraph, RepoBaseline};
 use crate::parser::Symbol;
 
 #[derive(Debug)]
@@ -11,14 +11,16 @@ pub struct RiskScore {
     pub transitive_callers: usize,
     pub modules_affected: usize,
     pub uncovered_callers: usize,
+    pub uncovered_ratio: f64,
+    pub percentile: f64,
     pub score: f64,
 }
 
 impl RiskScore {
     pub fn risk_label(&self) -> &'static str {
-        if self.score >= 30.0 {
+        if self.percentile >= 0.90 && self.uncovered_ratio > 0.5 {
             "HIGH"
-        } else if self.score >= 10.0 {
+        } else if self.percentile >= 0.75 || self.uncovered_ratio > 0.5 {
             "MED"
         } else {
             "LOW"
@@ -26,12 +28,10 @@ impl RiskScore {
     }
 
     pub fn risk_bar(&self) -> &'static str {
-        if self.score >= 30.0 {
-            "████"
-        } else if self.score >= 10.0 {
-            "███"
-        } else {
-            "█"
+        match self.risk_label() {
+            "HIGH" => "████",
+            "MED" => "███",
+            _ => "█",
         }
     }
 }
@@ -41,6 +41,7 @@ pub fn score_all(
     graph: &CallGraph,
     test_modules: &HashSet<String>,
     exclude: &[String],
+    baseline: &RepoBaseline,
 ) -> Vec<RiskScore> {
     let mut scores: Vec<RiskScore> = changed
         .iter()
@@ -79,10 +80,9 @@ pub fn score_all(
                 }
             }
 
-            let score = (direct as f64) * 3.0
-                + (transitive as f64) * 1.0
-                + (modules_affected as f64) * 2.0
-                + (uncovered as f64) * 4.0;
+            let uncovered_ratio = uncovered as f64 / transitive.max(1) as f64;
+            let percentile = baseline.percentile_of(direct);
+            let score = percentile * 60.0 + uncovered_ratio * 40.0;
 
             RiskScore {
                 symbol: sym.clone(),
@@ -90,6 +90,8 @@ pub fn score_all(
                 transitive_callers: transitive,
                 modules_affected,
                 uncovered_callers: uncovered,
+                uncovered_ratio,
+                percentile,
                 score,
             }
         })
@@ -165,7 +167,8 @@ mod tests {
         let test_modules: HashSet<String> = HashSet::new();
         let exclude = vec!["__tests__".to_string()];
 
-        let scores = score_all(&changed, &graph, &test_modules, &exclude);
+        let baseline = graph.compute_baseline(&exclude);
+        let scores = score_all(&changed, &graph, &test_modules, &exclude, &baseline);
         assert_eq!(scores.len(), 1);
         let s = &scores[0];
 
@@ -176,6 +179,8 @@ mod tests {
         assert_eq!(s.modules_affected, 2);
         // uncovered: only prod_caller (1), NOT test_caller
         assert_eq!(s.uncovered_callers, 1);
+        // uncovered_ratio: 1/1 = 1.0
+        assert_eq!(s.uncovered_ratio, 1.0);
     }
 
     #[test]
@@ -199,7 +204,8 @@ mod tests {
         let test_modules: HashSet<String> = HashSet::new();
         let exclude = vec!["__tests__".to_string()];
 
-        let scores = score_all(&changed, &graph, &test_modules, &exclude);
+        let baseline = graph.compute_baseline(&exclude);
+        let scores = score_all(&changed, &graph, &test_modules, &exclude, &baseline);
         let s = &scores[0];
 
         assert_eq!(s.direct_callers, 0);
@@ -207,5 +213,7 @@ mod tests {
         // Only the symbol's own module
         assert_eq!(s.modules_affected, 1);
         assert_eq!(s.uncovered_callers, 0);
+        // uncovered_ratio: 0/max(0,1) = 0.0
+        assert_eq!(s.uncovered_ratio, 0.0);
     }
 }

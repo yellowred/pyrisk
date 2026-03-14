@@ -17,11 +17,13 @@ pub fn render_table(scores: &[RiskScore], verbose: bool) {
         .load_preset(UTF8_FULL)
         .apply_modifier(UTF8_ROUND_CORNERS)
         .set_content_arrangement(ContentArrangement::Dynamic)
-        .set_header(vec!["SYMBOL", "CALLERS", "MODULES", "UNCOVERED", "RISK"]);
+        .set_header(vec!["SYMBOL", "CALLERS", "MODULES", "UNCOVERED", "PERCENTILE", "RISK"]);
 
     for s in scores {
         let sym_name = s.symbol.full_name();
         let callers_str = format!("{} ({})", s.direct_callers, s.transitive_callers);
+        let uncovered_str = format!("{} ({:.0}%)", s.uncovered_callers, s.uncovered_ratio * 100.0);
+        let percentile_str = format!("p{:.0}", s.percentile * 100.0);
         let risk_str = format!("{} {}", s.risk_bar(), s.risk_label());
 
         let color = match s.risk_label() {
@@ -34,7 +36,8 @@ pub fn render_table(scores: &[RiskScore], verbose: bool) {
             Cell::new(&sym_name),
             Cell::new(&callers_str),
             Cell::new(s.modules_affected),
-            Cell::new(s.uncovered_callers),
+            Cell::new(&uncovered_str),
+            Cell::new(&percentile_str),
             Cell::new(&risk_str).fg(color),
         ]);
     }
@@ -46,8 +49,12 @@ pub fn render_table(scores: &[RiskScore], verbose: bool) {
         for s in scores {
             println!("{}:", s.symbol.full_name());
             println!(
-                "  Direct callers: {}, Transitive: {}, Score: {:.1}",
-                s.direct_callers, s.transitive_callers, s.score
+                "  Direct: {}, Transitive: {}, Percentile: p{:.0}, Uncovered: {}/{} ({:.0}%), Score: {:.1}",
+                s.direct_callers, s.transitive_callers,
+                s.percentile * 100.0,
+                s.uncovered_callers, s.transitive_callers,
+                s.uncovered_ratio * 100.0,
+                s.score
             );
             println!();
         }
@@ -64,6 +71,8 @@ struct JsonEntry {
     transitive_callers: usize,
     modules_affected: usize,
     uncovered_callers: usize,
+    uncovered_ratio: f64,
+    percentile: f64,
     score: f64,
     risk: String,
 }
@@ -80,6 +89,8 @@ pub fn render_json(scores: &[RiskScore]) {
             transitive_callers: s.transitive_callers,
             modules_affected: s.modules_affected,
             uncovered_callers: s.uncovered_callers,
+            uncovered_ratio: s.uncovered_ratio,
+            percentile: s.percentile,
             score: s.score,
             risk: s.risk_label().to_string(),
         })

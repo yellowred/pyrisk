@@ -24,7 +24,10 @@ Output columns:
   CALLERS     Direct callers (transitive callers in parentheses)
   MODULES     Number of distinct modules affected by the change
   UNCOVERED   Callers in modules with no corresponding test file
-  RISK        Risk score bar and label: LOW (<10), MED (10-30), HIGH (>30)"
+  RISK        Risk label based on repo percentile and uncovered ratio:
+              HIGH = ≥p90 connectivity AND >50% uncovered
+              MED  = ≥p75 connectivity OR >50% uncovered
+              LOW  = below both thresholds"
 )]
 struct Cli {
     /// Git branch to compare against (default: main or master)
@@ -184,12 +187,27 @@ fn main() -> Result<()> {
     };
     let graph = callgraph::CallGraph::build(&all_syms);
 
-    // Step 5: Score
+    // Step 5: Compute baseline & score
+    if let Some(ref pb) = pb2 {
+        pb.set_message("Computing repo baseline…");
+    }
+    let baseline = graph.compute_baseline(&cli.exclude);
+    if cli.verbose {
+        eprintln!(
+            "baseline: {} symbols, p50={} p75={} p90={} p95={} transitive callers",
+            baseline.sorted_counts.len(),
+            baseline.p(50),
+            baseline.p(75),
+            baseline.p(90),
+            baseline.p(95),
+        );
+    }
+
     if let Some(ref pb) = pb2 {
         pb.set_message("Scoring risk…");
     }
     let test_modules = scorer::find_test_modules(&repo_root);
-    let scores = scorer::score_all(&changed, &graph, &test_modules, &cli.exclude);
+    let scores = scorer::score_all(&changed, &graph, &test_modules, &cli.exclude, &baseline);
     if let Some(pb) = pb2 {
         pb.finish_and_clear();
     }

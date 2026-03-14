@@ -241,6 +241,18 @@ impl CallGraph {
         Vec::new()
     }
 
+    /// Compute baseline: sorted direct caller counts for every symbol in the graph.
+    /// Uses direct callers (O(1) per symbol) as a fast proxy for connectivity.
+    pub fn compute_baseline(&self, exclude: &[String]) -> RepoBaseline {
+        let mut counts: Vec<usize> = self
+            .symbols
+            .keys()
+            .map(|full_name| self.direct_callers_filtered(full_name, exclude))
+            .collect();
+        counts.sort_unstable();
+        RepoBaseline { sorted_counts: counts }
+    }
+
     /// Direct callers count
     pub fn direct_callers(&self, sym: &str) -> usize {
         self.callers.get(sym).map(|s| s.len()).unwrap_or(0)
@@ -265,6 +277,32 @@ impl CallGraph {
                     .count()
             })
             .unwrap_or(0)
+    }
+}
+
+#[derive(Debug)]
+pub struct RepoBaseline {
+    pub sorted_counts: Vec<usize>,
+}
+
+impl RepoBaseline {
+    /// Returns the fraction of symbols with transitive caller count <= `count`.
+    /// Result is in [0.0, 1.0].
+    pub fn percentile_of(&self, count: usize) -> f64 {
+        if self.sorted_counts.is_empty() {
+            return 0.0;
+        }
+        let pos = self.sorted_counts.partition_point(|&c| c <= count);
+        pos as f64 / self.sorted_counts.len() as f64
+    }
+
+    /// Return the value at the given percentile (0-100).
+    pub fn p(&self, pct: usize) -> usize {
+        if self.sorted_counts.is_empty() {
+            return 0;
+        }
+        let idx = (pct as f64 / 100.0 * self.sorted_counts.len() as f64) as usize;
+        self.sorted_counts[idx.min(self.sorted_counts.len() - 1)]
     }
 }
 

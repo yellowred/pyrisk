@@ -36,9 +36,9 @@ pyrisk --exclude __tests__ --exclude __itests__
 ## Output
 
 ```
-SYMBOL        CALLERS    MODULES    UNCOVERED    RISK
-my_func       3 (12)     5          4            ████ HIGH
-helper        1 (1)      2          0            █ LOW
+SYMBOL        CALLERS    MODULES    UNCOVERED    PERCENTILE    RISK
+my_func       3 (12)     5          4 (80%)      p92           ████ HIGH
+helper        1 (1)      2          0 (0%)       p65           █ LOW
 ```
 
 | Column | Description |
@@ -46,8 +46,9 @@ helper        1 (1)      2          0            █ LOW
 | SYMBOL | Changed function or method (`module.qualname`) |
 | CALLERS | Direct callers (transitive callers in parentheses) |
 | MODULES | Number of distinct modules affected |
-| UNCOVERED | Callers in modules with no corresponding test file |
-| RISK | Score bar and label: LOW (<10), MED (10-30), HIGH (>30) |
+| UNCOVERED | Callers in modules with no test file, with uncovered ratio |
+| PERCENTILE | How connected this symbol is relative to all symbols in the repo |
+| RISK | Risk label based on percentile and uncovered ratio (see below) |
 
 ## Options
 
@@ -65,20 +66,29 @@ helper        1 (1)      2          0            █ LOW
 1. **Diff** — uses `git2` to find functions/methods changed between HEAD and the base branch
 2. **Parse** — uses `tree-sitter` to parse every `.py` file and extract definitions + call sites
 3. **Call graph** — builds a whole-repo call graph with qualified name resolution (`self.method()` resolves to the correct class, `ClassName.method()` disambiguates across classes)
-4. **Score** — BFS from each changed symbol through callers, counting direct/transitive callers, affected modules, and uncovered callers
-5. **Cache** — parsed file data is cached in a `sled` database keyed by file path + mtime for fast incremental runs
+4. **Baseline** — computes the direct caller distribution across all symbols in the repo
+5. **Score** — BFS from each changed symbol through callers, then ranks each symbol by its percentile in the repo baseline and its uncovered caller ratio
+6. **Cache** — parsed file data is cached in a `sled` database keyed by file path + mtime for fast incremental runs
 
 ## Risk scoring
 
-```
-score = (direct_callers * 3) + (transitive_callers * 1) + (modules_affected * 2) + (uncovered_callers * 4)
-```
+Risk labels are anchored against the full repository baseline rather than arbitrary thresholds. When pyrisk runs, it computes the direct caller count for every symbol in the repo to build a distribution. Each changed symbol is then scored on two axes:
 
-| Label | Score |
-|-------|-------|
-| LOW | < 10 |
-| MED | 10 - 30 |
-| HIGH | > 30 |
+**Percentile** — where this symbol's direct caller count falls in the repo-wide distribution. A symbol at p90 has more direct callers than 90% of all symbols in the codebase.
+
+**Uncovered ratio** — the fraction of transitive callers whose modules have no corresponding test file. A ratio of 100% means none of the code paths that depend on this symbol have test coverage.
+
+The composite score combines both: `score = percentile * 60 + uncovered_ratio * 40`.
+
+Labels are assigned based on both axes:
+
+| Label | Condition |
+|-------|-----------|
+| HIGH | Percentile >= p90 **and** uncovered ratio > 50% |
+| MED | Percentile >= p75 **or** uncovered ratio > 50% |
+| LOW | Below both thresholds |
+
+This means HIGH requires a symbol to be both highly connected in the repo (top 10%) and mostly untested — a concrete, defensible signal rather than an arbitrary score cutoff.
 
 ## License
 
